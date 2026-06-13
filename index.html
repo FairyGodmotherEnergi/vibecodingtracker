@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root {
     --bg-0: #07081a; --bg-1: #0c0e26; --bg-2: #12143a;
@@ -473,7 +474,56 @@
     } catch (e) {}
     return { sessions: [], projects: DEFAULT_PROJECTS.slice(), seq: 0, active: newActive(), weeklyGoalHours: 10, bestStreak: 0 };
   }
-  function save() { localStorage.setItem(KEY, JSON.stringify(data)); }
+  function save() {
+    data.updatedAt = Date.now();
+    localStorage.setItem(KEY, JSON.stringify(data));
+    pushCloud();
+  }
+
+  /* ---------- cloud sync (Supabase) ---------- */
+  const SUPA_URL = "https://ywfcpmmcnpxfnhvpculi.supabase.co";
+  const SUPA_KEY = "sb_publishable_GFZQH5ih7YnQaMRrt7Nmpg_xuBx2dQo";
+  const CLOUD_ID = "primary"; // one shared row holds this tracker's whole save
+  let sb = null;
+  try { if (window.supabase) sb = window.supabase.createClient(SUPA_URL, SUPA_KEY); } catch (e) { sb = null; }
+  let cloudPushT = null;
+  function normalizeLoaded(d) {
+    d.sessions = d.sessions || [];
+    d.projects = d.projects && d.projects.length ? d.projects : DEFAULT_PROJECTS.slice();
+    d.seq = d.seq || d.sessions.length;
+    d.active = d.active || newActive();
+    d.weeklyGoalHours = d.weeklyGoalHours || 10;
+    d.bestStreak = d.bestStreak || 0;
+    return d;
+  }
+  function pushCloud() {
+    if (!sb) return;
+    clearTimeout(cloudPushT);
+    cloudPushT = setTimeout(() => {
+      sb.from("tracker_data")
+        .upsert({ id: CLOUD_ID, data: data, updated_at: new Date().toISOString() })
+        .then(({ error }) => { if (error) console.warn("cloud push failed:", error.message); });
+    }, 800);
+  }
+  async function pullCloud() {
+    if (!sb) return;
+    try {
+      const { data: row, error } = await sb.from("tracker_data").select("data").eq("id", CLOUD_ID).maybeSingle();
+      if (error) { console.warn("cloud pull failed:", error.message); return; }
+      if (!row || !row.data) { pushCloud(); return; } // cloud is empty — seed it with our local copy
+      const cloud = row.data;
+      const cloudStamp = cloud.updatedAt || 0;
+      const localStamp = data.updatedAt || 0;
+      if (cloudStamp > localStamp) {
+        data = normalizeLoaded(cloud);
+        localStorage.setItem(KEY, JSON.stringify(data));
+        syncConfigFromState(); renderTimerUI(); tick(); renderAll();
+        toast("✓ Synced from cloud");
+      } else if (localStamp > cloudStamp) {
+        pushCloud();
+      }
+    } catch (e) { console.warn("cloud pull error:", e); }
+  }
 
   const $ = (id) => document.getElementById(id);
   const elTimer = $("timer"), elStatus = $("status"), elStatusText = $("statusText");
@@ -917,6 +967,7 @@
   /* ---------- boot ---------- */
   function renderAll() { renderHud(); renderStats(); renderWeek(); renderFilters(); renderLog(); }
   buildGoalOptions(); syncConfigFromState(); renderTimerUI(); tick(); renderAll();
+  pullCloud();
 })();
 </script>
 </body>
